@@ -1,0 +1,22 @@
+# Environment variables — KABHI COMMIT MAT KARO!
+.env
+*.env
+
+# Database
+*.db
+*.sqlite
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+
+# OS
+.DS_Store
+Thumbs.db
