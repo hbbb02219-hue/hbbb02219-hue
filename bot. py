@@ -1,0 +1,491 @@
+"""
+AI Resume + Banner Bot for Telegram
+Owner ID: 7663073502
+"""
+
+import logging
+import os
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+    ConversationHandler,
+)
+from anthropic_helper import generate_resume_content, generate_banner_text
+from payments import create_payment_link
+from database import save_user, get_user, save_resume, get_resume_count
+from admin import (
+    admin_panel, admin_callback, handle_broadcast, handle_giveplan,
+    notify_new_user, notify_resume_generated, notify_payment,
+    is_owner, OWNER_ID,
+)
+
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
+logger = logging.getLogger(__name__)
+
+# Conversation states
+NAME, JOB, SKILLS, EXPERIENCE, STYLE, CONFIRM = range(6)
+
+STYLES = {
+    "modern":  "🔷 Modern — Sleek & Corporate",
+    "elegant": "🌟 Elegant — Vibrant & Creative",
+    "bold":    "🔥 Bold — Energetic & Powerful",
+    "minimal": "⬜ Minimal — Clean & Simple",
+}
+
+PLANS = {
+    "basic":     {"name": "Basic",     "price": 99,  "limit": 1},
+    "premium":   {"name": "Premium",   "price": 299, "limit": 5},
+    "unlimited": {"name": "Unlimited", "price": 499, "limit": 999},
+}
+
+
+# ─────────────────────────────────────────────
+# /start
+# ─────────────────────────────────────────────
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    user = update.effective_user
+    is_new = get_user(user.id) is None
+    save_user(user.id, user.first_name, user.username)
+
+    if is_new:
+        await notify_new_user(context, user)
+
+    keyboard = [
+        [InlineKeyboardButton("🚀 Resume Banao (FREE)", callback_data="make_resume")],
+        [InlineKeyboardButton("💎 Plans Dekho",         callback_data="show_plans")],
+        [InlineKeyboardButton("ℹ️ Help",                callback_data="help")],
+    ]
+    if is_owner(user.id):
+        keyboard.append(
+            [InlineKeyboardButton("👑 Admin Panel", callback_data="admin_home")]
+        )
+
+    await update.message.reply_text(
+        f"👋 *Namaste, {user.first_name}!*\n\n"
+        "Main hoon *ResumeAI Bot* 🤖\n\n"
+        "Main aapke liye banata hoon:\n"
+        "📄 *Professional Resume* — AI-powered\n"
+        "🖼️ *LinkedIn Banner* — Custom design\n"
+        "💡 *Career Summary* — Job-ready content\n\n"
+        "Neeche button dabao aur shuru karo! ⬇️",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return ConversationHandler.END
+
+
+# ─────────────────────────────────────────────
+# Button Handler
+# ─────────────────────────────────────────────
+async def button_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    await query.answer()
+    data = query.data
+
+    # ── Admin ──
+    if data.startswith("admin_"):
+        await admin_callback(update, context)
+        return ConversationHandler.END
+
+    # ── Resume Banao ──
+    if data == "make_resume":
+        await query.edit_message_text(
+            "✏️ *Step 1/4 — Aapka Naam*\n\n"
+            "Apna poora naam likhein:\n"
+            "_(e.g. Rahul Sharma)_",
+            parse_mode="Markdown",
+        )
+        return NAME
+
+    # ── Plans ──
+    elif data == "show_plans":
+        keyboard = [
+            [InlineKeyboardButton("✅ Basic — ₹99",       callback_data="buy_basic")],
+            [InlineKeyboardButton("⭐ Premium — ₹299",    callback_data="buy_premium")],
+            [InlineKeyboardButton("🔥 Unlimited — ₹499",  callback_data="buy_unlimited")],
+            [InlineKeyboardButton("⬅️ Back",              callback_data="back_home")],
+        ]
+        await query.edit_message_text(
+            "💎 *Hamare Plans:*\n\n"
+            "✅ *Basic — ₹99*\n"
+            "  • 1 Resume + Banner\n"
+            "  • PDF Download\n\n"
+            "⭐ *Premium — ₹299*\n"
+            "  • 5 Resumes + Banners\n"
+            "  • Cover Letter bhi\n"
+            "  • Priority Support\n\n"
+            "🔥 *Unlimited — ₹499/month*\n"
+            "  • Unlimited Resumes\n"
+            "  • All Styles Unlocked\n"
+            "  • LinkedIn Optimization\n\n"
+            "_Pehla resume FREE hai!_ 🎁",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return ConversationHandler.END
+
+    # ── Buy Plan ──
+    elif data.startswith("buy_"):
+        plan_key = data.replace("buy_", "")
+        plan = PLANS[plan_key]
+        payment_link = create_payment_link(
+            query.from_user.id, plan_key, plan["price"]
+        )
+        keyboard = [[
+            InlineKeyboardButton(
+                f"💳 ₹{plan['price']} Pay Karein", url=payment_link
+            )
+        ]]
+        await query.edit_message_text(
+            f"💳 *{plan['name']} Plan — ₹{plan['price']}*\n\n"
+            "Payment ke baad plan auto-activate hoga ✅\n\n"
+            "_Razorpay secure payment_ 🔒",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return ConversationHandler.END
+
+    # ── Help ──
+    elif data == "help":
+        await query.edit_message_text(
+            "ℹ️ *Help & Commands:*\n\n"
+            "/start — Bot shuru karo\n"
+            "/resume — Naya resume banao\n"
+            "/myresumes — Purane resumes dekho\n"
+            "/plans — Plans aur pricing\n"
+            "/support — Help chahiye?\n\n"
+            "📧 Support: @YourSupportHandle",
+            parse_mode="Markdown",
+        )
+        return ConversationHandler.END
+
+    # ── Back Home ──
+    elif data == "back_home":
+        keyboard = [
+            [InlineKeyboardButton("🚀 Resume Banao", callback_data="make_resume")],
+            [InlineKeyboardButton("💎 Plans Dekho",  callback_data="show_plans")],
+        ]
+        await query.edit_message_text(
+            "🏠 *Home*\n\nKya karna chahte hain?",
+            parse_mode="Markdown",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return ConversationHandler.END
+
+    # ── Style Select ──
+    elif data.startswith("style_"):
+        context.user_data["style"] = data.replace("style_", "")
+        return await confirm_step(update, context)
+
+    return ConversationHandler.END
+
+
+# ─────────────────────────────────────────────
+# Conversation Steps
+# ─────────────────────────────────────────────
+async def get_name(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    context.user_data["name"] = update.message.text.strip()
+    await update.message.reply_text(
+        "✏️ *Step 2/4 — Job Title*\n\n"
+        "Aap kis field mein hain?\n"
+        "_(e.g. Software Engineer, Graphic Designer)_",
+        parse_mode="Markdown",
+    )
+    return JOB
+
+
+async def get_job(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    context.user_data["job"] = update.message.text.strip()
+    await update.message.reply_text(
+        "✏️ *Step 3/4 — Skills*\n\n"
+        "Apni top 3-5 skills batao:\n"
+        "_(e.g. Python, Django, Docker, PostgreSQL)_",
+        parse_mode="Markdown",
+    )
+    return SKILLS
+
+
+async def get_skills(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    context.user_data["skills"] = update.message.text.strip()
+    await update.message.reply_text(
+        "✏️ *Step 4/4 — Experience*\n\n"
+        "Thodi si detail do:\n"
+        "_(e.g. 3 saal, TCS mein Software Developer tha)_",
+        parse_mode="Markdown",
+    )
+    return EXPERIENCE
+
+
+async def get_experience(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    context.user_data["experience"] = update.message.text.strip()
+    keyboard = [
+        [
+            InlineKeyboardButton("🔷 Modern",  callback_data="style_modern"),
+            InlineKeyboardButton("🌟 Elegant", callback_data="style_elegant"),
+        ],
+        [
+            InlineKeyboardButton("🔥 Bold",    callback_data="style_bold"),
+            InlineKeyboardButton("⬜ Minimal", callback_data="style_minimal"),
+        ],
+    ]
+    await update.message.reply_text(
+        "🎨 *Banner Style Chunein:*\n\n"
+        "🔷 *Modern* — Corporate & Professional\n"
+        "🌟 *Elegant* — Creative & Vibrant\n"
+        "🔥 *Bold* — Energetic & Eye-catching\n"
+        "⬜ *Minimal* — Clean & Simple",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return STYLE
+
+
+async def confirm_step(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    ud = context.user_data
+    style_label = STYLES.get(ud.get("style", "modern"), "Modern")
+
+    keyboard = [[
+        InlineKeyboardButton("✅ Haan, Banao!", callback_data="generate_now"),
+        InlineKeyboardButton("✏️ Edit Karo",   callback_data="restart"),
+    ]]
+    await query.edit_message_text(
+        f"📋 *Aapki Details:*\n\n"
+        f"👤 *Naam:* {ud.get('name')}\n"
+        f"💼 *Job:* {ud.get('job')}\n"
+        f"⚡ *Skills:* {ud.get('skills')}\n"
+        f"📅 *Experience:* {ud.get('experience')}\n"
+        f"🎨 *Style:* {style_label}\n\n"
+        "Sab sahi hai?",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return CONFIRM
+
+
+# ─────────────────────────────────────────────
+# Generate Resume
+# ─────────────────────────────────────────────
+async def generate_resume(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "restart":
+        await query.edit_message_text(
+            "✏️ *Naam dobara likhein:*",
+            parse_mode="Markdown"
+        )
+        return NAME
+
+    await query.edit_message_text(
+        "⏳ *AI aapka resume bana raha hai...*\n\n"
+        "_Thoda wait karo!_ ✨",
+        parse_mode="Markdown"
+    )
+
+    ud = context.user_data
+    user = query.from_user
+
+    resume_data = await generate_resume_content(
+        name=ud["name"],
+        job=ud["job"],
+        skills=ud["skills"],
+        experience=ud["experience"],
+        style=ud.get("style", "modern"),
+    )
+
+    banner_text = await generate_banner_text(
+        name=ud["name"],
+        job=ud["job"],
+        tagline=resume_data.get("bannerTagline", "Building Tomorrow Today"),
+    )
+
+    save_resume(user.id, ud, resume_data)
+
+    # Owner ko notify karo
+    await notify_resume_generated(context, user, ud, resume_data)
+
+    # Resume bhejo
+    await query.edit_message_text(
+        format_resume_message(ud, resume_data),
+        parse_mode="Markdown"
+    )
+
+    # Banner bhejo
+    keyboard = [[
+        InlineKeyboardButton("🔄 Naya Resume",    callback_data="make_resume"),
+        InlineKeyboardButton("💎 Premium Upgrade", callback_data="show_plans"),
+    ]]
+    await context.bot.send_message(
+        chat_id=query.message.chat_id,
+        text=banner_text,
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+    return ConversationHandler.END
+
+
+def format_resume_message(ud: dict, data: dict) -> str:
+    skills_str = " • ".join(data.get("keySkills", []))
+    exp = data.get("experience", [{}])[0]
+    edu = data.get("education", {})
+    return (
+        f"✅ *Aapka Resume Tayyaar Hai!*\n"
+        f"{'─' * 30}\n\n"
+        f"👤 *{ud['name']}*\n"
+        f"💼 _{ud['job']}_\n"
+        f"🔗 _{data.get('linkedinHeadline', '')}_\n\n"
+        f"📋 *Summary:*\n{data.get('summary', '')}\n\n"
+        f"⚡ *Skills:*\n{skills_str}\n\n"
+        f"💼 *Experience:*\n"
+        f"• *{exp.get('role', '')}* @ {exp.get('company', '')}\n"
+        f"  _{exp.get('duration', '')}_ — {exp.get('achievement', '')}\n\n"
+        f"🎓 *Education:*\n"
+        f"• {edu.get('degree', '')} — {edu.get('college', '')}\n\n"
+        f"{'─' * 30}\n"
+        f"_Premium mein PDF download available hai!_ 📄"
+    )
+
+
+# ─────────────────────────────────────────────
+# Extra Commands
+# ─────────────────────────────────────────────
+async def resume_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    await update.message.reply_text(
+        "✏️ *Naya Resume — Step 1/4*\n\nAapka poora naam likhein:",
+        parse_mode="Markdown",
+    )
+    return NAME
+
+
+async def my_resumes(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    count = get_resume_count(update.effective_user.id)
+    await update.message.reply_text(
+        f"📂 *Aapke Resumes:*\n\n"
+        f"Total banaye: *{count}*\n\n"
+        f"_Premium mein PDF download milta hai!_ 📄",
+        parse_mode="Markdown",
+    )
+
+
+async def plans_command(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    keyboard = [
+        [InlineKeyboardButton("✅ Basic — ₹99",      callback_data="buy_basic")],
+        [InlineKeyboardButton("⭐ Premium — ₹299",   callback_data="buy_premium")],
+        [InlineKeyboardButton("🔥 Unlimited — ₹499", callback_data="buy_unlimited")],
+    ]
+    await update.message.reply_text(
+        "💎 *Plans:*\n\n"
+        "✅ Basic ₹99 | ⭐ Premium ₹299 | 🔥 Unlimited ₹499/mo",
+        parse_mode="Markdown",
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+
+
+async def support(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    await update.message.reply_text(
+        "🆘 *Support:*\n\n"
+        "💬 Telegram: @YourSupportHandle\n"
+        "⏰ Response: 24 hours",
+        parse_mode="Markdown",
+    )
+
+
+async def cancel(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+) -> int:
+    await update.message.reply_text(
+        "❌ Cancel ho gaya. /start se dobara shuru karo."
+    )
+    return ConversationHandler.END
+
+
+# ─────────────────────────────────────────────
+# Text Handler — Broadcast & GivePlan
+# ─────────────────────────────────────────────
+async def text_handler(
+    update: Update, context: ContextTypes.DEFAULT_TYPE
+):
+    if not is_owner(update.effective_user.id):
+        return
+    if context.user_data.get("awaiting_broadcast"):
+        await handle_broadcast(update, context)
+    elif context.user_data.get("awaiting_giveplan"):
+        await handle_giveplan(update, context)
+
+
+# ─────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────
+def main():
+    token = os.getenv("TELEGRAM_BOT_TOKEN")
+    if not token:
+        raise ValueError("TELEGRAM_BOT_TOKEN set nahi hai!")
+
+    app = Application.builder().token(token).build()
+
+    conv = ConversationHandler(
+        entry_points=[
+            CommandHandler("start", start),
+            CommandHandler("resume", resume_command),
+            CallbackQueryHandler(button_handler, pattern="^make_resume$"),
+        ],
+        states={
+            NAME:       [MessageHandler(filters.TEXT & ~filters.COMMAND, get_name)],
+            JOB:        [MessageHandler(filters.TEXT & ~filters.COMMAND, get_job)],
+            SKILLS:     [MessageHandler(filters.TEXT & ~filters.COMMAND, get_skills)],
+            EXPERIENCE: [MessageHandler(filters.TEXT & ~filters.COMMAND, get_experience)],
+            STYLE:      [CallbackQueryHandler(button_handler, pattern="^style_")],
+            CONFIRM:    [CallbackQueryHandler(generate_resume, pattern="^(generate_now|restart)$")],
+        },
+        fallbacks=[CommandHandler("cancel", cancel)],
+        allow_reentry=True,
+    )
+
+    app.add_handler(conv)
+    app.add_handler(CallbackQueryHandler(button_handler))
+    app.add_handler(CommandHandler("admin",     admin_panel))
+    app.add_handler(CommandHandler("myresumes", my_resumes))
+    app.add_handler(CommandHandler("plans",     plans_command))
+    app.add_handler(CommandHandler("support",   support))
+    app.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND, text_handler
+    ))
+
+    logger.info(f"✅ Bot chalu! Owner: {OWNER_ID}")
+    app.run_polling(allowed_updates=Update.ALL_TYPES)
+
+
+if __name__ == "__main__":
+    main()
