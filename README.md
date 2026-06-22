@@ -2,14 +2,7 @@
 
 Telegram pe professional resume aur LinkedIn banner generate karne wala bot — Claude AI se powered!
 
-## ✨ Features
 
-- 📄 **AI Resume** — Claude se professional content
-- 🖼️ **LinkedIn Banner** — Custom 4 styles
-- 💰 **Razorpay Payments** — India ke liye
-- 👑 **Admin Panel** — Owner ko har cheez ka DM
-- 🗃️ **SQLite Database** — User data store
-- 📢 **Broadcast** — Sabhi users ko message
 
 ## 💰 Pricing Plans
 
