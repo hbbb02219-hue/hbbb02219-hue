@@ -16,11 +16,15 @@ from telegram.ext import (
     ConversationHandler,
 )
 from anthropic_helper import generate_resume_content, generate_banner_text
-from payments import create_payment_link
+from payments import (
+    send_payment_qr, handle_paid_claim,
+    approve_payment, reject_payment,
+    paid_command, receive_screenshot,
+)
 from database import save_user, get_user, save_resume, get_resume_count
 from admin import (
     admin_panel, admin_callback, handle_broadcast, handle_giveplan,
-    notify_new_user, notify_resume_generated, notify_payment,
+    notify_new_user, notify_resume_generated,
     is_owner, OWNER_ID,
 )
 
@@ -110,10 +114,10 @@ async def button_handler(
     # ── Plans ──
     elif data == "show_plans":
         keyboard = [
-            [InlineKeyboardButton("✅ Basic — ₹99",       callback_data="buy_basic")],
-            [InlineKeyboardButton("⭐ Premium — ₹299",    callback_data="buy_premium")],
-            [InlineKeyboardButton("🔥 Unlimited — ₹499",  callback_data="buy_unlimited")],
-            [InlineKeyboardButton("⬅️ Back",              callback_data="back_home")],
+            [InlineKeyboardButton("✅ Basic — ₹99",      callback_data="buy_basic")],
+            [InlineKeyboardButton("⭐ Premium — ₹299",   callback_data="buy_premium")],
+            [InlineKeyboardButton("🔥 Unlimited — ₹499", callback_data="buy_unlimited")],
+            [InlineKeyboardButton("⬅️ Back",             callback_data="back_home")],
         ]
         await query.edit_message_text(
             "💎 *Hamare Plans:*\n\n"
@@ -134,25 +138,38 @@ async def button_handler(
         )
         return ConversationHandler.END
 
-    # ── Buy Plan ──
+    # ── Buy Plan — UPI QR Code ──
     elif data.startswith("buy_"):
         plan_key = data.replace("buy_", "")
-        plan = PLANS[plan_key]
-        payment_link = create_payment_link(
-            query.from_user.id, plan_key, plan["price"]
+        await send_payment_qr(
+            context,
+            query.message.chat_id,
+            query.from_user,
+            plan_key,
         )
-        keyboard = [[
-            InlineKeyboardButton(
-                f"💳 ₹{plan['price']} Pay Karein", url=payment_link
-            )
-        ]]
-        await query.edit_message_text(
-            f"💳 *{plan['name']} Plan — ₹{plan['price']}*\n\n"
-            "Payment ke baad plan auto-activate hoga ✅\n\n"
-            "_Razorpay secure payment_ 🔒",
-            parse_mode="Markdown",
-            reply_markup=InlineKeyboardMarkup(keyboard),
-        )
+        return ConversationHandler.END
+
+    # ── User ne Pay kar diya ──
+    elif data.startswith("paid_"):
+        parts = data.split("_")
+        plan_key = parts[1]
+        amount   = int(parts[2])
+        await handle_paid_claim(update, context, plan_key, amount)
+        return ConversationHandler.END
+
+    # ── Owner ne Approve kiya ──
+    elif data.startswith("approve_"):
+        parts     = data.split("_")
+        target_id = int(parts[1])
+        plan_key  = parts[2]
+        amount    = int(parts[3])
+        await approve_payment(update, context, target_id, plan_key, amount)
+        return ConversationHandler.END
+
+    # ── Owner ne Reject kiya ──
+    elif data.startswith("reject_"):
+        target_id = int(data.split("_")[1])
+        await reject_payment(update, context, target_id)
         return ConversationHandler.END
 
     # ── Help ──
@@ -163,8 +180,9 @@ async def button_handler(
             "/resume — Naya resume banao\n"
             "/myresumes — Purane resumes dekho\n"
             "/plans — Plans aur pricing\n"
+            "/paid — Payment screenshot bhejo\n"
             "/support — Help chahiye?\n\n"
-            "📧 Support: @YourSupportHandle",
+            "📧 Support: @oye_babyy",
             parse_mode="Markdown",
         )
         return ConversationHandler.END
@@ -305,7 +323,7 @@ async def generate_resume(
         parse_mode="Markdown"
     )
 
-    ud = context.user_data
+    ud   = context.user_data
     user = query.from_user
 
     resume_data = await generate_resume_content(
@@ -323,19 +341,15 @@ async def generate_resume(
     )
 
     save_resume(user.id, ud, resume_data)
-
-    # Owner ko notify karo
     await notify_resume_generated(context, user, ud, resume_data)
 
-    # Resume bhejo
     await query.edit_message_text(
         format_resume_message(ud, resume_data),
         parse_mode="Markdown"
     )
 
-    # Banner bhejo
     keyboard = [[
-        InlineKeyboardButton("🔄 Naya Resume",    callback_data="make_resume"),
+        InlineKeyboardButton("🔄 Naya Resume",     callback_data="make_resume"),
         InlineKeyboardButton("💎 Premium Upgrade", callback_data="show_plans"),
     ]]
     await context.bot.send_message(
@@ -416,7 +430,7 @@ async def support(
 ):
     await update.message.reply_text(
         "🆘 *Support:*\n\n"
-        "💬 Telegram: @YourSupportHandle\n"
+        "💬 Telegram: @oye_babyy\n"
         "⏰ Response: 24 hours",
         parse_mode="Markdown",
     )
@@ -432,7 +446,7 @@ async def cancel(
 
 
 # ─────────────────────────────────────────────
-# Text Handler — Broadcast & GivePlan
+# Text Handler — Broadcast, GivePlan
 # ─────────────────────────────────────────────
 async def text_handler(
     update: Update, context: ContextTypes.DEFAULT_TYPE
@@ -457,7 +471,7 @@ def main():
 
     conv = ConversationHandler(
         entry_points=[
-            CommandHandler("start", start),
+            CommandHandler("start",  start),
             CommandHandler("resume", resume_command),
             CallbackQueryHandler(button_handler, pattern="^make_resume$"),
         ],
@@ -479,6 +493,8 @@ def main():
     app.add_handler(CommandHandler("myresumes", my_resumes))
     app.add_handler(CommandHandler("plans",     plans_command))
     app.add_handler(CommandHandler("support",   support))
+    app.add_handler(CommandHandler("paid",      paid_command))
+    app.add_handler(MessageHandler(filters.PHOTO, receive_screenshot))
     app.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND, text_handler
     ))
